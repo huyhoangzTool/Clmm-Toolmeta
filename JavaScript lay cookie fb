@@ -1,0 +1,195 @@
+// ====== TOOL COOKIE BY HUY HOANGZ ======
+/*
+ * Script chạy trong Console trình duyệt (khi đã đăng nhập Facebook).
+ * Tự động lấy cookie, fb_dtsg, lsd và danh sách nhóm Messenger,
+ * sau đó in ra console để dùng cho tool gửi tin nhắn.
+ * Yêu cầu: đang ở tab facebook.com và đã đăng nhập.
+ */
+
+(async function autoExtractFBSession() {
+  "use strict";
+
+  // ====== 1. LẤY COOKIE ======
+  const cookieStr = document.cookie;
+  console.log("%c[1] COOKIE:", "color:#0f0;font-weight:bold");
+  console.log(cookieStr);
+
+  // ====== 2. LẤY USER ID ======
+  const uidMatch = cookieStr.match(/(?:^|;\s*)c_user=(\d+)/);
+  const uid = uidMatch ? uidMatch[1] : null;
+  console.log("%c[2] USER ID:", "color:#0f0;font-weight:bold", uid);
+
+  if (!uid) {
+    console.error("[LỖI] Không tìm thấy c_user trong cookie. Chưa đăng nhập?");
+    return;
+  }
+
+  // ====== 3. LẤY FB_DTSG ======
+  let fb_dtsg = null;
+  try {
+    // Ưu tiên biến toàn cục nếu có
+    if (window.require) {
+      try {
+        const DTSG = window.require("DTSG");
+        fb_dtsg = DTSG?.getToken?.() || null;
+      } catch (e) {}
+    }
+    // Fallback: quét HTML
+    if (!fb_dtsg) {
+      const m = document.documentElement.innerHTML.match(
+        /"DTSGInitialData",\[\],\{"token":"([^"]+)"/
+      );
+      if (m) fb_dtsg = m[1];
+    }
+    // Fallback: input ẩn
+    if (!fb_dtsg) {
+      const inp = document.querySelector('input[name="fb_dtsg"]');
+      if (inp) fb_dtsg = inp.value;
+    }
+  } catch (e) {
+    console.warn("Lỗi lấy fb_dtsg:", e.message);
+  }
+  console.log("%c[3] FB_DTSG:", "color:#0f0;font-weight:bold", fb_dtsg);
+
+  // ====== 4. LẤY LSD ======
+  let lsd = null;
+  try {
+    if (window.require) {
+      try {
+        const LSD = window.require("LSD");
+        lsd = LSD?.token || null;
+      } catch (e) {}
+    }
+    if (!lsd) {
+      const m = document.documentElement.innerHTML.match(
+        /"LSD",\[\],\{"token":"([^"]+)"/
+      );
+      if (m) lsd = m[1];
+    }
+  } catch (e) {
+    console.warn("Lỗi lấy lsd:", e.message);
+  }
+  console.log("%c[4] LSD:", "color:#0f0;font-weight:bold", lsd);
+
+  // ====== 5. LẤY DATR / FR / XS (một số endpoint cần) ======
+  const getCk = (n) => {
+    const m = cookieStr.match(new RegExp("(?:^|;\\s*)" + n + "=([^;]+)"));
+    return m ? m[1] : null;
+  };
+  console.log("%c[5] TOKENS PHỤ:", "color:#0f0;font-weight:bold", {
+    datr: getCk("datr"),
+    fr: getCk("fr"),
+    xs: getCk("xs"),
+    sb: getCk("sb")
+  });
+
+  // ====== 6. LẤY DANH SÁCH NHÓM MESSENGER QUA GRAPHQL ======
+  // doc_id có thể thay đổi; nếu lỗi cần cập nhật từ Network tab.
+  const DOC_ID = "9389353197332982";
+
+  const variables = {
+    "0": {
+      cursor: null,
+      count: 50,
+      is_work_user: false,
+      include_thread_muted: true,
+      include_thread_archived: false,
+      include_thread_unread: true,
+      include_thread_participant: false,
+      include_thread_folder: null,
+      folder_tag: null,
+      include_thread_image: true,
+      include_thread_snippet: true,
+      include_thread_message_reaction: false
+    }
+  };
+
+  const body = new URLSearchParams({
+    av: uid,
+    __user: uid,
+    __a: "1",
+    __req: "1",
+    fb_dtsg: fb_dtsg || "",
+    lsd: lsd || "",
+    jazoest: "2" + Math.floor(Math.random() * 10000),
+    queries: JSON.stringify({
+      o0: {
+        doc_id: DOC_ID,
+        query_name: "MWInboxThreadsListPaginationQuery",
+        variables: variables
+      }
+    })
+  });
+
+  console.log("%c[6] Đang tải danh sách nhóm...", "color:#ff0");
+
+  let groups = [];
+  try {
+    const res = await fetch("https://www.facebook.com/api/graphql/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-FB-LSD": lsd || ""
+      },
+      body: body.toString(),
+      credentials: "include"
+    });
+    const json = await res.json();
+
+    const edges = json?.data?.o0?.viewer?.message_threads?.edges || [];
+    groups = edges.map((t) => ({
+      id: t.node?.thread_key?.thread_fbid,
+      name:
+        t.node?.name ||
+        t.node?.all_participants?.edges?.[0]?.node?.name ||
+        "Không tên",
+      is_group: t.node?.thread_key?.thread_fbid ? true : false
+    })).filter((g) => g.id);
+
+    console.log(
+      "%c[6] ĐÃ TẢI " + groups.length + " NHÓM:",
+      "color:#0f0;font-weight:bold"
+    );
+    console.table(groups);
+  } catch (e) {
+    console.error("[LỖI] Không tải được danh sách nhóm:", e.message);
+  }
+
+  // ====== 7. XUẤT OBJECT TỔNG HỢP ======
+  const SESSION = {
+    cookie: cookieStr,
+    uid: uid,
+    fb_dtsg: fb_dtsg,
+    lsd: lsd,
+    datr: getCk("datr"),
+    fr: getCk("fr"),
+    xs: getCk("xs"),
+    groups: groups
+  };
+
+  window.FB_SESSION = SESSION; // gán vào window để dùng lại
+  console.log(
+    "%c[7] ĐÃ LƯU VÀO window.FB_SESSION",
+    "color:#0f0;font-weight:bold"
+  );
+  console.log(
+    "%cSao chép JSON dưới đây dán vào tool:",
+    "color:#0ff;font-weight:bold"
+  );
+  console.log(JSON.stringify(SESSION, null, 2));
+
+  // ====== 8. TỰ ĐỘNG COPY COOKIE VÀO CLIPBOARD ======
+  try {
+    await navigator.clipboard.writeText(cookieStr);
+    console.log(
+      "%c[8] ĐÃ COPY COOKIE VÀO CLIPBOARD",
+      "color:#0f0;font-weight:bold"
+    );
+  } catch (e) {
+    console.warn(
+      "[8] Không copy được clipboard (cần HTTPS + quyền). Cookie vẫn ở trên."
+    );
+  }
+
+  return SESSION;
+})();
